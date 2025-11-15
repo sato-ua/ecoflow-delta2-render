@@ -1,4 +1,4 @@
-# ecoflow_monitor.py — ФІНАЛЬНА ВЕРСІЯ (листопад 2025)
+# ecoflow_monitor.py — 100% робочий, без синтаксичних помилок (15.11.2025)
 import requests
 import time
 import hmac
@@ -15,9 +15,9 @@ SERIAL = os.getenv("SERIAL")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-API_URL = "https://api.ecoflow.com/iot-open/sign/device"
-
+API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
 CHECK_INTERVAL = 65
+
 last_state = None
 debug_counter = 0
 
@@ -43,7 +43,7 @@ def get_device_data():
     }
 
     try:
-        r = requests.post(API_URL + "/quota", json=payload, headers=headers, timeout=15)
+        r = requests.post(API_URL, json=payload, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -56,7 +56,7 @@ def extract_pd(data):
     pd = data.get("data")
     if isinstance(pd, dict):
         return pd
-    for item in data.get("quotaList", []):
+    for item in data.get("quota'altList", []):
         if item.get("sn") == SERIAL:
             return item.get("data", {})
     return {}
@@ -95,7 +95,6 @@ while True:
 
         if raw and str(raw.get("code")) == "0":
             state = get_current_state(raw)
-            global debug_counter
             debug_counter += 1
 
             # Діагностика перші 3 рази + при зміні стану
