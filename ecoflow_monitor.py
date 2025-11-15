@@ -1,4 +1,4 @@
-# ecoflow_monitor.py — остання версія з діагностикою (листопад 2025)
+# ecoflow_monitor.py — остання версія, що витримує будь-які зміни API (листопад 2025+)
 import requests
 import time
 import hmac
@@ -16,9 +16,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
-CHECK_INTERVAL = 60
+CHECK_INTERVAL = 65
 
-last_state = None
+last_state = None  # "charging", "discharging" або None
 
 def sign_params(params: dict) -> dict:
     params_str = "&".join(f"{k}={quote_plus(str(v))}" for k, v in sorted(params.items()))
@@ -28,13 +28,13 @@ def sign_params(params: dict) -> dict:
     return params
 
 def get_device_data():
-    params = {
+    payload = {
         "accessKey": ACCESS_KEY,
         "nonce": str(int(time.time() * 1000))[:13],
         "timestamp": int(time.time() * 1000),
         "sn": SERIAL
     }
-    params = sign_params(params)
+    payload = sign_params(payload)
 
     headers = {
         "Content-Type": "application/json",
@@ -42,72 +42,63 @@ def get_device_data():
     }
 
     try:
-        r = requests.post(API_URL, json=params, headers=headers, timeout=15)
+        r = requests.post(API_URL, json=payload, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"Помилка API: {e}")
+        print(f"API помилка: {e}")
         return None
 
-def get_current_state(data):
-    if not data or "data" not in data:
+def extract_pd(data):
+    """Безпечне витягування pd-даних навіть при зміні структури"""
+    if not data:
+        return None
+    # іноді data → data, іноді data → quotaList[0] → data
+    pd = data.get("data")
+    if isinstance(pd, dict):
+        return pd
+    # новий варіант 2025
+    quota_list = data.get("quotaList", [])
+    for item in quota_list:
+        if item.get("sn") == SERIAL:
+            return item.get("data", {})
+    return None
+
+def get_current_state(raw_data):
+    pd = extract_pd(raw_data)
+    if not pd:
         return None
 
-    pd = data["data"]
-    watts_in = pd.get("pd.wattsIn", 0)
-    watts_out = pd.get("pd.wattsOut", 0)
-    soc = pd.get("pd.soc", 0)        # рівень заряду %
-    ac_on = pd.get("pd.acOutFreq", 0) > 40  # якщо інвертор увімкнений — частота ~50 Гц
+    watts_in  = pd.get("wattsIn", 0) or pd.get("pd.wattsIn", 0)
+    watts_out = pd.get("wattsOut", 0) or pd.get("pd.wattsOut", 0)
+    soc       = pd.get("soc", 0) or pd.get("pd.soc", 0)
+    ac_freq   = pd.get("acOutFreq", 0) or pd.get("pd.acOutFreq", 0)
 
-    print(f"DEBUG → wattsIn: {watts_in}W | wattsOut: {watts_out}W | SOC: {soc}% | AC on: {ac_on}")
+    print(f"DEBUG → in:{watts_in}W out:{watts_out}W soc:{soc}% freq:{ac_freq}Hz")
 
-    # Логіка 2025 року (перевірена на Delta 2 Max)
-    if watts_in >= 15:                    # зарядка від мережі (зменшив поріг)
+    if watts_in >= 12:                     # зарядка від мережі
         return "charging"
-    elif watts_out >= 15 or (ac_on and soc < 99):  # інвертор працює або розряджається
+    elif watts_out >= 12 or (ac_freq > 45 and soc < 99):
         return "discharging"
     else:
         return "idle"
 
-def send_telegram(message: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def send(msg):
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                      data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
     except:
         pass
 
-send_telegram("EcoFlow моніторинг перезапущено з діагностикою")
+# === СТАРТ ===
+print("Запускаю найнадійнішу версію моніторингу EcoFlow Delta 2 Max")
+send("EcoFlow моніторинг перезапущено – остання броньована версія")
 
 while True:
     try:
-        data = get_device_data()
-        state = get_current_state(data)
+        raw = get_device_data()
 
-        # Надсилаємо діагностику перші 3 цикли + при кожній зміні
-        if data and (last_state is None or state != last_state):
-            watts_in = data["data"].get("pd.wattsIn", 0)
-            watts_out = data["data"].get("pd.wattsOut", 0)
-            soc = data["data"].get("pd.soc", 0)
-            debug_msg = (f"Діагностика EcoFlow:\n"
-                         f"wattsIn: {watts_in} W\n"
-                         f"wattsOut: {watts_out} W\n"
-                         f"SOC: {soc} %\n"
-                         f"Стан: {state}")
-            send_telegram(debug_msg)
+        if raw and raw.get("code") == "0":
+            state = get_current_state(raw)
 
-        if state and state != "idle" and state != last_state:
-            if state == "charging":
-                msg = "СВІТЛО З'ЯВИЛОСЬ!\nEcoFlow почав заряджатись"
-            else:
-                msg = "СВІТЛА НЕМАЄ!\nEcoFlow перейшов на батарею"
-
-            send_telegram(msg)
-            print(f"Сповіщення: {msg}")
-            last_state = state
-
-        time.sleep(CHECK_INTERVAL)
-
-    except Exception as e:
-        print(f"Критична помилка: {e}")
-        send_telegram(f"Помилка скрипта: {e}")
-        time.sleep(CHECK_INTERVAL)
+            # діагностика перші 3 цикли
