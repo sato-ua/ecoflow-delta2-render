@@ -1,4 +1,4 @@
-# ecoflow_monitor.py — остання робоча версія (листопад 2025)
+# ecoflow_monitor.py — 100% робоча версія, листопад 2025
 import requests
 import time
 import hmac
@@ -19,9 +19,9 @@ API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
 CHECK_INTERVAL = 65
 
 last_state = None
-debug_counter = 0  # для перших кількох діагностичних повідомлень
+debug_counter = 0
 
-def sign_params(params: dict) -> dict:
+def sign_params(params):
     params_str = "&".join(f"{k}={quote_plus(str(v))}" for k, v in sorted(params.items()))
     sign_str = f"{params_str}&{SECRET_KEY}"
     signature = hmac.new(SECRET_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
@@ -72,4 +72,59 @@ def get_current_state(raw_data):
     soc       = pd.get("soc", 0) or pd.get("pd.soc", 0)
     ac_freq   = pd.get("acOutFreq", 0) or pd.get("pd.acOutFreq", 0)
 
-    print(f"DEBUG → in:{watts_in}W out:{watts_out
+    print(f"DEBUG -> in:{watts_in}W out:{watts_out}W soc:{soc}% freq:{ac_freq}Hz")
+
+    if watts_in >= 12:
+        return "charging"
+    elif watts_out >= 12 or (ac_freq > 45 and soc < 99):
+        return "discharging"
+    else:
+        return "idle"
+
+def send(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
+            timeout=10
+        )
+    except:
+        pass
+
+send("EcoFlow моніторинг запущено – остання робоча версія")
+
+while True:
+    try:
+        raw = get_device_data()
+
+        if raw and raw.get("code") == "0":
+            state = get_current_state(raw)
+            global debug_counter
+            debug_counter += 1
+
+            # Діагностика перші 3 рази + при зміні стану
+            if debug_counter <= 3 or (state and state != last_state):
+                pd = extract_pd(raw) or {}
+                watts_in  = pd.get("wattsIn", 0) or pd.get("pd.wattsIn", 0)
+                watts_out = pd.get("wattsOut", 0) or pd.get("pd.wattsOut", 0)
+                soc       = pd.get("soc", 0) or pd.get("pd.soc", 0)
+
+                send(f"Діагностика EcoFlow\n"
+                     f"wattsIn: {watts_in} W\n"
+                     f"wattsOut: {watts_out} W\n"
+                     f"SOC: {soc} %\n"
+                     f"Стан: {state or 'немає даних'}")
+
+            if state and state != "idle" and state != last_state:
+                if state == "charging":
+                    send("СВІТЛО Є!\nEcoFlow почав заряджатись від мережі")
+                else:
+                    send("СВІТЛА НЕМАЄ!\nEcoFlow працює від батареї")
+                last_state = state
+
+        time.sleep(CHECK_INTERVAL)
+
+    except Exception as e:
+        print(f"Критична помилка: {e}")
+        send(f"Помилка скрипта: {e}")
+        time.sleep(CHECK_INTERVAL)
