@@ -1,92 +1,61 @@
-# ecoflow_monitor.py — МІНІМАЛЬНА робоча версія (гарантовано стартує)
-import requests
-import time
-import hmac
-import hashlib
+import requests, time, hmac, hashlib
 from urllib.parse import quote_plus
-import os
 
-# ВКАЖИ СВОЇ ДАНІ ПРЯМО ТУТ (тимчасово, поки Railway не виправиться)
-ACCESS_KEY = "9gZHSt6akN4bnsSWyPdOYHNsDfftXwkD"
-SECRET_KEY = "iD1BP5w76HLbvV2erbq8CNWTK6MBp4HP"
-SERIAL = "R351ZEB4HG490907"          # ← свій серійник
-TELEGRAM_TOKEN = "8387721988:AAEKwg4Gj0-7pBD8JMjYkMU1GwCEAAkAzEk"   # ← свій токен
-CHAT_ID = 317004830                 # ← свій chat_id (число)
+# ← ВСТАВ СВОЇ ДАНІ СЮДИ (копіюй прямо з developer.ecoflow.com і телеграм-бота)
+ACCESS_KEY = "9gZHSt6akN4bnsSWyPdOYHNsDfftXwkD"          # ← твій
+SECRET_KEY = "iD1BP5w76HLbvV2erbq8CNWTK6MBp4HP"   # ← твій
+SERIAL = "R351ZEB4HG490907"                            # ← твій
+TELEGRAM_TOKEN = "8387721988:AAEKwg4Gj0-7pBD8JMjYkMU1GwCEAAkAzEk"               # ← твій
+CHAT_ID = 317004830                                    # ← твій (число)
 
-# Якщо хочеш брати з змінних — раскоментуй рядки нижче (після виправлення Railway)
-# ACCESS_KEY = os.getenv("ACCESS_KEY")
-# SECRET_KEY = os.getenv("SECRET_KEY")
-# SERIAL = os.getenv("SERIAL")
-# TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-# CHAT_ID = int(os.getenv("CHAT_ID", 0))
+URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
+last = None
 
-API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
-CHECK_INTERVAL = 65
-last_state = None
-
-def send(msg):
+def send(t):
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+                      data={"chat_id": CHAT_ID, "text": t}, timeout=10)
     except:
         pass
 
-def get_data():
-    params = {
-        "accessKey": ACCESS_KEY,
-        "nonce": str(int(time.time()*1000))[:13],
-        "timestamp": int(time.time()*1000),
-        "sn": SERIAL
-    }
-    # підпис
-    s = "&".join(f"{k}={quote_plus(str(v))}" for k, v in sorted(params.items()))
-    sign = hmac.new(SECRET_KEY.encode(), f"{s}&{SECRET_KEY}".encode(), hashlib.sha256).hexdigest()
-    params["sign"] = sign
-
-    try:
-        r = requests.post(API_URL, json=params,
-                          headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"},
-                          timeout=15)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        send(f"API помилка: {e}")
-        return None
-
-send("МІНІМАЛЬНА версія запущена – зараз перевірю EcoFlow")
+send("Хардкод версія запущена – зараз буде правда")
 
 while True:
     try:
-        data = get_data()
-        if not data:
-            time.sleep(CHECK_INTERVAL)
+        p = {
+            "accessKey": ACCESS_KEY,
+            "nonce": str(int(time.time()*1000))[:13],
+            "timestamp": int(time.time()*1000),
+            "sn": SERIAL
+        }
+        s = "&".join(f"{k}={quote_plus(str(v))}" for k, v in sorted(p.items()))
+        sign = hmac.new(SECRET_KEY.encode(), f"{s}&{SECRET_KEY}".encode(), hashlib.sha256).hexdigest()
+        p["sign"] = sign
+
+        r = requests.post(URL, json=p, headers={"User-Agent": "Mozilla/5.0"}, timeout=15).json()
+
+        if r.get("code") != "0":
+            send(f"EcoFlow помилка: {r.get('message')}")
+            time.sleep(60)
             continue
 
-        if data.get("code") != "0":
-            send(f"EcoFlow помилка: {data.get('message')}")
-            time.sleep(CHECK_INTERVAL)
-            continue
-
-        # шукаємо pd
-        pd = data.get("data", {})
-        if not pd and "quotaList" in data:
-            for q in data["quotaList"]:
+        pd = r.get("data", {})
+        if not pd and "quotaList" in r:
+            for q in r["quotaList"]:
                 if q.get("sn") == SERIAL:
                     pd = q.get("data", {})
-                    break
 
-        watts_in = pd.get("wattsIn", 0) or pd.get("pd", {}).get("wattsIn", 0)
-        watts_out = pd.get("wattsOut", 0) or pd.get("pd", {}).get("wattsOut", 0)
+        win = pd.get("wattsIn", 0) or pd.get("pd", {}).get("wattsIn", 0)
+        wout = pd.get("wattsOut", 0) or pd.get("pd", {}).get("wattsOut", 0)
 
-        send(f"Тест EcoFlow\nЗарядка: {watts_in}W\nНавантаження: {watts_out}W")
+        send(f"Успіх!\nЗарядка: {win}W\nНавантаження: {wout}W")
 
-        state = "charging" if watts_in >= 10 else "discharging" if watts_out >= 10 else "idle"
-        if state != "idle" and state != last_state:
+        state = "charging" if win >= 10 else "discharging" if wout >= 10 else "idle"
+        if state != "idle" and state != last:
             send("СВІТЛО Є!" if state == "charging" else "СВІТЛА НЕМАЄ!")
-            last_state = state
+            last = state
 
-        time.sleep(CHECK_INTERVAL)
-
+        time.sleep(65)
     except Exception as e:
-        send(f"Критична помилка: {e}")
-        time.sleep(CHECK_INTERVAL)
+        send(f"Помилка: {e}")
+        time.sleep(65)
