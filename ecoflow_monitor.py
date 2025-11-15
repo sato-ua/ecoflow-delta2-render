@@ -1,4 +1,4 @@
-# ecoflow_monitor.py — остання версія, що витримує будь-які зміни API (листопад 2025+)
+# ecoflow_monitor.py — остання робоча версія (листопад 2025)
 import requests
 import time
 import hmac
@@ -18,7 +18,8 @@ CHAT_ID = os.getenv("CHAT_ID")
 API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
 CHECK_INTERVAL = 65
 
-last_state = None  # "charging", "discharging" або None
+last_state = None
+debug_counter = 0  # для перших кількох діагностичних повідомлень
 
 def sign_params(params: dict) -> dict:
     params_str = "&".join(f"{k}={quote_plus(str(v))}" for k, v in sorted(params.items()))
@@ -46,18 +47,15 @@ def get_device_data():
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"API помилка: {e}")
+        print(f"API error: {e}")
         return None
 
 def extract_pd(data):
-    """Безпечне витягування pd-даних навіть при зміні структури"""
     if not data:
         return None
-    # іноді data → data, іноді data → quotaList[0] → data
     pd = data.get("data")
     if isinstance(pd, dict):
         return pd
-    # новий варіант 2025
     quota_list = data.get("quotaList", [])
     for item in quota_list:
         if item.get("sn") == SERIAL:
@@ -74,31 +72,4 @@ def get_current_state(raw_data):
     soc       = pd.get("soc", 0) or pd.get("pd.soc", 0)
     ac_freq   = pd.get("acOutFreq", 0) or pd.get("pd.acOutFreq", 0)
 
-    print(f"DEBUG → in:{watts_in}W out:{watts_out}W soc:{soc}% freq:{ac_freq}Hz")
-
-    if watts_in >= 12:                     # зарядка від мережі
-        return "charging"
-    elif watts_out >= 12 or (ac_freq > 45 and soc < 99):
-        return "discharging"
-    else:
-        return "idle"
-
-def send(msg):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-    except:
-        pass
-
-# === СТАРТ ===
-print("Запускаю найнадійнішу версію моніторингу EcoFlow Delta 2 Max")
-send("EcoFlow моніторинг перезапущено – остання броньована версія")
-
-while True:
-    try:
-        raw = get_device_data()
-
-        if raw and raw.get("code") == "0":
-            state = get_current_state(raw)
-
-            # діагностика перші 3 цикли
+    print(f"DEBUG → in:{watts_in}W out:{watts_out
