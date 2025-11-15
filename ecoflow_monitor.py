@@ -1,4 +1,4 @@
-# ecoflow_monitor.py — 100% робоча версія, листопад 2025
+# ecoflow_monitor.py — ФІНАЛЬНА ВЕРСІЯ (листопад 2025)
 import requests
 import time
 import hmac
@@ -15,9 +15,9 @@ SERIAL = os.getenv("SERIAL")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
-CHECK_INTERVAL = 65
+API_URL = "https://api.ecoflow.com/iot-open/sign/device"
 
+CHECK_INTERVAL = 65
 last_state = None
 debug_counter = 0
 
@@ -43,7 +43,7 @@ def get_device_data():
     }
 
     try:
-        r = requests.post(API_URL, json=payload, headers=headers, timeout=15)
+        r = requests.post(API_URL + "/quota", json=payload, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -52,27 +52,23 @@ def get_device_data():
 
 def extract_pd(data):
     if not data:
-        return None
+        return {}
     pd = data.get("data")
     if isinstance(pd, dict):
         return pd
-    quota_list = data.get("quotaList", [])
-    for item in quota_list:
+    for item in data.get("quotaList", []):
         if item.get("sn") == SERIAL:
             return item.get("data", {})
-    return None
+    return {}
 
 def get_current_state(raw_data):
     pd = extract_pd(raw_data)
-    if not pd:
-        return None
+    watts_in  = pd.get("wattsIn", 0) or pd.get("pd", {}).get("wattsIn", 0)
+    watts_out = pd.get("wattsOut", 0) or pd.get("pd", {}).get("wattsOut", 0)
+    soc       = pd.get("soc", 0) or pd.get("pd", {}).get("soc", 0)
+    ac_freq   = pd.get("acOutFreq", 0) or pd.get("pd", {}).get("acOutFreq", 0)
 
-    watts_in  = pd.get("wattsIn", 0) or pd.get("pd.wattsIn", 0)
-    watts_out = pd.get("wattsOut", 0) or pd.get("pd.wattsOut", 0)
-    soc       = pd.get("soc", 0) or pd.get("pd.soc", 0)
-    ac_freq   = pd.get("acOutFreq", 0) or pd.get("pd.acOutFreq", 0)
-
-    print(f"DEBUG -> in:{watts_in}W out:{watts_out}W soc:{soc}% freq:{ac_freq}Hz")
+    print(f"DEBUG → in:{watts_in}W out:{watts_out}W soc:{soc}% freq:{ac_freq}")
 
     if watts_in >= 12:
         return "charging"
@@ -91,33 +87,33 @@ def send(msg):
     except:
         pass
 
-send("EcoFlow моніторинг запущено – остання робоча версія")
+send("EcoFlow моніторинг запущено – ФІНАЛЬНА ВЕРСІЯ")
 
 while True:
     try:
         raw = get_device_data()
 
-        if raw and raw.get("code") == "0":
+        if raw and str(raw.get("code")) == "0":
             state = get_current_state(raw)
             global debug_counter
             debug_counter += 1
 
             # Діагностика перші 3 рази + при зміні стану
             if debug_counter <= 3 or (state and state != last_state):
-                pd = extract_pd(raw) or {}
-                watts_in  = pd.get("wattsIn", 0) or pd.get("pd.wattsIn", 0)
-                watts_out = pd.get("wattsOut", 0) or pd.get("pd.wattsOut", 0)
-                soc       = pd.get("soc", 0) or pd.get("pd.soc", 0)
+                pd = extract_pd(raw)
+                watts_in  = pd.get("wattsIn", 0) or pd.get("pd", {}).get("wattsIn", 0)
+                watts_out = pd.get("wattsOut", 0) or pd.get("pd", {}).get("wattsOut", 0)
+                soc       = pd.get("soc", 0) or pd.get("pd", {}).get("soc", 0)
 
                 send(f"Діагностика EcoFlow\n"
                      f"wattsIn: {watts_in} W\n"
                      f"wattsOut: {watts_out} W\n"
                      f"SOC: {soc} %\n"
-                     f"Стан: {state or 'немає даних'}")
+                     f"Висновок: {state}")
 
             if state and state != "idle" and state != last_state:
                 if state == "charging":
-                    send("СВІТЛО Є!\nEcoFlow почав заряджатись від мережі")
+                    send("СВІТЛО Є!\nEcoFlow заряджається від мережі")
                 else:
                     send("СВІТЛА НЕМАЄ!\nEcoFlow працює від батареї")
                 last_state = state
