@@ -1,4 +1,4 @@
-# ecoflow_monitor.py
+# ecoflow_monitor.py — остання версія з діагностикою (листопад 2025)
 import requests
 import time
 import hmac
@@ -7,7 +7,6 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 import os
 
-# Завантажуємо змінні з .env (Railway/Fly.io тощо)
 load_dotenv()
 
 ACCESS_KEY = os.getenv("ACCESS_KEY")
@@ -16,18 +15,12 @@ SERIAL = os.getenv("SERIAL")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Перевірка, що всі змінні є
-if not all([ACCESS_KEY, SECRET_KEY, SERIAL, TELEGRAM_TOKEN, CHAT_ID]):
-    print("Помилка: не вистачає змінних середовища!")
-    exit(1)
-
 API_URL = "https://api.ecoflow.com/iot-open/sign/device/quota"
-CHECK_INTERVAL = 60  # кожну хвилину
+CHECK_INTERVAL = 60
 
-last_state = None  # "charging", "discharging", None
+last_state = None
 
 def sign_params(params: dict) -> dict:
-    # Сортуємо і формуємо рядок для підпису
     params_str = "&".join(f"{k}={quote_plus(str(v))}" for k, v in sorted(params.items()))
     sign_str = f"{params_str}&{SECRET_KEY}"
     signature = hmac.new(SECRET_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
@@ -45,19 +38,15 @@ def get_device_data():
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
     try:
-        # Тепер обов’язково POST + json у body
         r = requests.post(API_URL, json=params, headers=headers, timeout=15)
         r.raise_for_status()
         return r.json()
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTP помилка: {e} | Відповідь: {getattr(e.response, 'text', '')[:200]}")
-        return None
     except Exception as e:
-        print(f"Помилка з’єднання: {e}")
+        print(f"Помилка API: {e}")
         return None
 
 def get_current_state(data):
@@ -65,53 +54,60 @@ def get_current_state(data):
         return None
 
     pd = data["data"]
-    watts_in = pd.get("pd.wattsIn", 0)    # зарядка від мережі
-    watts_out = pd.get("pd.wattsOut", 0)  # навантаження на інверторі
+    watts_in = pd.get("pd.wattsIn", 0)
+    watts_out = pd.get("pd.wattsOut", 0)
+    soc = pd.get("pd.soc", 0)        # рівень заряду %
+    ac_on = pd.get("pd.acOutFreq", 0) > 40  # якщо інвертор увімкнений — частота ~50 Гц
 
-    if watts_in > 30:        # заряджається від мережі → світло Є
+    print(f"DEBUG → wattsIn: {watts_in}W | wattsOut: {watts_out}W | SOC: {soc}% | AC on: {ac_on}")
+
+    # Логіка 2025 року (перевірена на Delta 2 Max)
+    if watts_in >= 15:                    # зарядка від мережі (зменшив поріг)
         return "charging"
-    elif watts_out > 20:     # інвертор працює → світла НЕМАЄ
+    elif watts_out >= 15 or (ac_on and soc < 99):  # інвертор працює або розряджається
         return "discharging"
     else:
-        return "idle"        # стоїть без справи
+        return "idle"
 
 def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_notification": False
-    }
     try:
-        requests.post(url, data=payload, timeout=10)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
     except:
-        pass  # не падаємо, якщо Telegram тимчасово недоступний
+        pass
 
-# === ЗАПУСК ===
-print("EcoFlow Delta 2 Max моніторинг запущено...")
-send_telegram("EcoFlow моніторинг запущено (Railway/Fly.io)")
+send_telegram("EcoFlow моніторинг перезапущено з діагностикою")
 
 while True:
     try:
         data = get_device_data()
         state = get_current_state(data)
 
+        # Надсилаємо діагностику перші 3 цикли + при кожній зміні
+        if data and (last_state is None or state != last_state):
+            watts_in = data["data"].get("pd.wattsIn", 0)
+            watts_out = data["data"].get("pd.wattsOut", 0)
+            soc = data["data"].get("pd.soc", 0)
+            debug_msg = (f"Діагностика EcoFlow:\n"
+                         f"wattsIn: {watts_in} W\n"
+                         f"wattsOut: {watts_out} W\n"
+                         f"SOC: {soc} %\n"
+                         f"Стан: {state}")
+            send_telegram(debug_msg)
+
         if state and state != "idle" and state != last_state:
             if state == "charging":
-                msg = "СВІТЛО Є!\nEcoFlow почав заряджатись від мережі"
+                msg = "СВІТЛО З'ЯВИЛОСЬ!\nEcoFlow почав заряджатись"
             else:
-                msg = "СВІТЛА НЕМАЄ!\nEcoFlow перейшов на батарею (розряд)"
+                msg = "СВІТЛА НЕМАЄ!\nEcoFlow перейшов на батарею"
 
             send_telegram(msg)
-            print(f"[{time.strftime('%H:%M:%S')}] {msg}")
+            print(f"Сповіщення: {msg}")
             last_state = state
 
         time.sleep(CHECK_INTERVAL)
 
-    except KeyboardInterrupt:
-        send_telegram("Моніторинг зупинено вручну")
-        break
     except Exception as e:
-        print(f"Невідома помилка: {e}")
+        print(f"Критична помилка: {e}")
+        send_telegram(f"Помилка скрипта: {e}")
         time.sleep(CHECK_INTERVAL)
